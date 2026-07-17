@@ -1,0 +1,32 @@
+[Unit]
+Description=dhcp-tee: relay-format DHCP visibility copier
+After=vxlan0.service network-online.target
+Requires=vxlan0.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Least privilege: no full root. CAP_NET_RAW for AF_PACKET capture,
+# CAP_NET_BIND_SERVICE to source from UDP/67. Create the user first:
+#   useradd -r -s /usr/sbin/nologin dhcp-tee
+User=dhcp-tee
+Group=dhcp-tee
+AmbientCapabilities=CAP_NET_RAW CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+Environment=DHCP_TEE_IFACE=vxlan0
+# Comma-separated visibility tool IPs (forwarded on UDP/67):
+Environment=DHCP_TEE_TOOLS=10.0.0.10
+# Optional: pin the source IP if the instance has multiple ENIs/addresses:
+#   Environment=DHCP_TEE_SRC_IP=192.168.1.50
+
+ExecStart=/usr/local/bin/dhcp-tee
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
