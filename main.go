@@ -14,6 +14,9 @@
 // every option (55/60/61/12/77...) are preserved for the tool's fingerprinting
 // engine. Only the L3/L4 envelope changes, and the kernel builds that when we
 // send from our own UDP socket.
+//
+// The AF_PACKET capture path is Linux-only and lives in capture_linux.go; the
+// rest of this package is portable so it can be unit-tested on any OS.
 package main
 
 import (
@@ -29,17 +32,7 @@ import (
 	"time"
 
 	"github.com/gopacket/gopacket"
-	"github.com/gopacket/gopacket/afpacket"
 	"github.com/gopacket/gopacket/layers"
-)
-
-const (
-	// AF_PACKET ring geometry. frameSize must be a power of two; blockSize a
-	// multiple of both the page size (4096) and frameSize. DHCP frames are tiny
-	// (<600B), so 4096 never truncates; the ring is deliberately modest.
-	frameSize = 4096
-	blockSize = frameSize * 32 // 131072
-	numBlocks = 16
 )
 
 type stats struct {
@@ -89,16 +82,11 @@ func main() {
 	}
 	defer send.Close()
 
-	tp, err := afpacket.NewTPacket(
-		afpacket.OptInterface(*iface),
-		afpacket.OptFrameSize(frameSize),
-		afpacket.OptBlockSize(blockSize),
-		afpacket.OptNumBlocks(numBlocks),
-	)
+	source, closeCapture, err := openCapture(*iface)
 	if err != nil {
-		log.Fatalf("opening AF_PACKET on %s (needs CAP_NET_RAW, iface up): %v", *iface, err)
+		log.Fatalf("opening capture on %s: %v", *iface, err)
 	}
-	defer tp.Close()
+	defer closeCapture()
 
 	var st stats
 	go reportStats(&st, *statInt)
@@ -108,21 +96,25 @@ func main() {
 	go func() {
 		<-sig
 		log.Printf("shutting down; received=%d forwarded=%d", st.received.Load(), st.forwarded.Load())
-		tp.Close()
+		closeCapture()
 		send.Close()
 		os.Exit(0)
 	}()
 
 	log.Printf("dhcp-tee up: iface=%s src=:%d tools=%s reqOnly=%v", *iface, *srcPort, *toolCSV, *reqOnly)
 
-	src := gopacket.NewPacketSource(tp, layers.LayerTypeEthernet)
-	src.NoCopy = true
-	for pkt := range src.Packets() {
+	for pkt := range source.Packets() {
 		handle(pkt, send, dests, &st, *reqOnly, *logEach)
 	}
 }
 
-func handle(pkt gopacket.Packet, send *net.UDPConn, dests []*net.UDPAddr, st *stats, reqOnly, logEach bool) {
+// udpWriter is the subset of *net.UDPConn that handle needs. Defining it as an
+// interface lets unit tests substitute a fake without opening a real socket.
+type udpWriter interface {
+	WriteToUDP(b []byte, addr *net.UDPAddr) (int, error)
+}
+
+func handle(pkt gopacket.Packet, send udpWriter, dests []*net.UDPAddr, st *stats, reqOnly, logEach bool) {
 	udpLayer := pkt.Layer(layers.LayerTypeUDP)
 	if udpLayer == nil {
 		return

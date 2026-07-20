@@ -1,0 +1,70 @@
+name: CI
+
+# Runs the same checks contributors run locally, on every push and PR, so a
+# green PR in the merge gate has passed the identical bar. Enable branch
+# protection on `main` requiring these jobs to make it enforceable for third
+# parties.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.22"
+
+jobs:
+  # Portable checks: formatting, vet, and unit tests on Linux + macOS so both
+  # kinds of contributor are covered.
+  lint-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: gofmt check
+        run: make fmt-check
+      - name: go vet
+        run: make vet
+      - name: unit tests (race)
+        run: make test-race
+
+  # The service binary targets Linux (AF_PACKET); make sure the capture path
+  # actually compiles for the platforms we ship.
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: build linux/${{ matrix.goarch }}
+        run: make build GOARCH=${{ matrix.goarch }}
+
+  # Real end-to-end pipeline: create vxlan0, run dhcp-tee, inject a synthetic
+  # mirror packet, assert a copy reaches the stand-in tool. Needs kernel VXLAN
+  # and AF_PACKET, which the Ubuntu runner provides via sudo.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: install iproute2
+        run: sudo apt-get update && sudo apt-get install -y iproute2
+      - name: run integration test
+        run: sudo --preserve-env=PATH env "PATH=$PATH" bash testdata/integration-test.sh

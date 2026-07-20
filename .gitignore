@@ -1,0 +1,12 @@
+# build artifacts
+/bin/
+
+# terraform state / local vars
+terraform/.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+
+# editor
+.vscode/
+.idea/

@@ -1,0 +1,22 @@
+[Unit]
+Description=vxlan0 decap interface for AWS Traffic Mirroring (VXLAN/4789)
+After=network-online.target
+Wants=network-online.target
+# dhcp-tee.service pulls this in via Requires=/After=; keep the interface up for
+# the lifetime of the box so mirrored frames are always being decapsulated.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# External (collect_metadata) mode by default: accepts ANY VNI, so multiple
+# mirror sessions and AWS auto-assigned VNIs work with no per-session config.
+# To pin a VNI instead, set MODE=pinned and VNI=<n> here and use the same
+# virtual_network_id on every mirror session.
+# Environment=MODE=pinned
+# Environment=VNI=42
+# Environment=DSTPORT=4789
+ExecStart=/usr/local/sbin/setup-vxlan.sh
+ExecStop=/sbin/ip link del vxlan0
+
+[Install]
+WantedBy=multi-user.target

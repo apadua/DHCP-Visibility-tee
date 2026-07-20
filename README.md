@@ -53,9 +53,65 @@ make build GOARCH=arm64      # t4g; use amd64 for x86 instances
 # -> bin/dhcp-tee
 ```
 
+## Test
+
+Two layers, both run by CI (see [CONTRIBUTING.md](CONTRIBUTING.md) for detail):
+
+```sh
+# 1. Unit tests — portable, run on any OS, no privileges:
+make fmt-check vet test-race
+
+# 2. End-to-end pipeline — real capture+forward, no AWS needed.
+#    Linux + root:
+sudo make test-integration
+#    ...or reproducibly in Docker from any OS:
+make test-integration-docker
+```
+
+The integration test injects a synthetic VXLAN-wrapped DHCP DISCOVER, lets the
+kernel decap it onto `vxlan0`, and asserts `dhcp-tee` forwards a valid relayed
+copy to a stand-in tool — exercising the whole path with no AWS and no live DHCP.
+Every push and PR runs the same checks via [GitHub Actions](.github/workflows/ci.yml).
+
 ## Deploy
 
-### 1. AWS side (Terraform)
+Two options. **Option A (CloudFormation)** is the easiest — it's native to AWS
+(nothing to install), and provisions *everything* in one stack: the mirror
+plumbing **and** a reformatter instance that builds, installs, and starts
+`dhcp-tee` for you. **Option B (Terraform)** provisions only the AWS plumbing and
+expects you to prepare the host yourself.
+
+### Option A — CloudFormation (recommended, one command)
+
+The template [`deploy/cloudformation.yaml`](deploy/cloudformation.yaml) creates
+the mirror filter + rule + target, one session per Infoblox ENI, a
+least-privilege security group, and the reformatter EC2 instance. The instance is
+managed via SSM (no SSH key), and its user-data builds `dhcp-tee` from source and
+enables the `vxlan0` + `dhcp-tee` services.
+
+```sh
+aws cloudformation deploy \
+  --template-file deploy/cloudformation.yaml \
+  --stack-name dhcp-tee \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+      VpcId=vpc-0123456789abcdef0 \
+      SubnetId=subnet-0123456789abcdef0 \
+      InfobloxEni1=eni-0aaa... InfobloxEni2=eni-0bbb... \
+      ToolIps=10.0.0.10,10.0.0.11 \
+      InfobloxCidr=10.0.0.0/16 \
+      ToolCidr=10.0.0.0/16
+```
+
+No CLI? Upload the same file in the **CloudFormation console** (Create stack →
+upload template) and fill in the parameters. Point `InfobloxEni1..4` at **every
+DHCP-serving member** (an HA pair / Grid has more than one), mirroring the
+**service interface**, not management (LAN1). For x86 instance types, set
+`ImageId` to the `x86_64` SSM path and pick an x86 `InstanceType` (see the
+parameter description). Once the stack is `CREATE_COMPLETE`, open the instance via
+**SSM Session Manager** and jump to [Verify](#verify).
+
+### Option B — Terraform (AWS plumbing only)
 
 ```sh
 cd terraform
@@ -66,9 +122,9 @@ terraform init && terraform apply
 Attach the emitted `reformatter_security_group_id` to the reformatter ENI. Point
 `infoblox_eni_ids` at **every DHCP-serving member** (an Infoblox HA pair / Grid
 has more than one), and be sure to mirror the **service interface**, not the
-management (LAN1) interface.
+management (LAN1) interface. Then prepare the host as below.
 
-### 2. Reformatter host
+### Reformatter host (Option B only)
 
 Any small Linux instance in the VPC (`t4g.small` is generous — DHCP is bursty,
 not a stream). Then:
